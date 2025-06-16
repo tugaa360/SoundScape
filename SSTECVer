@@ -1,0 +1,844 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>サウンドスケープ - Techno Edition</title>
+    <style>
+        :root {
+            --bg-color: #121212;
+            --text-color: #e0e0e0;
+            --primary-color: #ff00ff; /* Magenta for a techno vibe */
+            --card-bg: #1e1e1e;
+            --border-color: #333;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            margin: 0;
+            padding: 5px;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-height: 100vh;
+            box-sizing: border-box;
+        }
+        .container {
+            max-width: 800px;
+            width: 100%;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+        h1 {
+            color: var(--primary-color);
+            text-align: center;
+            margin-bottom: 20px;
+            font-size: 2em;
+            text-shadow: 0 0 8px rgba(255, 0, 255, 0.5);
+        }
+        #emotion-map-container {
+            position: relative;
+            width: 100%;
+            /* 16:9 のアスペクト比を維持するためのハック */
+            padding-top: 56.25%; /* 9 / 16 * 100% */
+            margin-top: 1rem;
+            border-radius: 12px;
+            overflow: hidden;
+            border: 1px solid var(--border-color);
+            background: #000;
+        }
+        #myCanvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            cursor: crosshair;
+        }
+        .axis-label {
+            position: absolute;
+            font-size: 0.8rem;
+            color: #bbb;
+            background-color: rgba(20, 20, 20, 0.8);
+            padding: 2px 8px;
+            border-radius: 4px;
+            user-select: none;
+            z-index: 10; /* Canvasより手前に表示 */
+            box-shadow: 0 0 5px rgba(255, 0, 255, 0.2);
+        }
+        .label-arousal-pos { top: 10px; left: 50%; transform: translateX(-50%); }
+        .label-arousal-neg { bottom: 10px; left: 50%; transform: translateX(-50%); }
+        .label-valence-pos { top: 50%; right: 10px; transform: translateY(-50%); }
+        .label-valence-neg { top: 50%; left: 10px; transform: translateY(-50%); }
+        
+        #controls {
+            padding: 20px;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            background-color: var(--card-bg);
+            width: 100%;
+            box-sizing: border-box;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        #sound-toggle-button {
+            width: 100%;
+            padding: 12px 20px;
+            font-size: 1.1em;
+            cursor: pointer;
+            border-radius: 5px;
+            border: 1px solid var(--primary-color);
+            background-color: var(--card-bg);
+            color: var(--primary-color);
+            transition: background-color 0.2s, color 0.2s, transform 0.1s;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.3);
+        }
+        #sound-toggle-button:hover {
+            background-color: var(--primary-color);
+            color: #fff;
+            transform: translateY(-1px);
+        }
+        #sound-toggle-button:active {
+            transform: translateY(0);
+            box-shadow: none;
+        }
+        #jog-dials-container {
+            display: flex;
+            justify-content: space-around;
+            flex-wrap: wrap;
+            gap: 20px;
+            width: 100%;
+        }
+        .jog-dial-wrapper {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 8px; /* 追加: ラベルとキャンバスの間隔 */
+        }
+        /* ジョグダイヤルのラベルの文字色を白に */
+        .jog-dial-wrapper > div {
+            color: #fff; /* ← ここを変更 */
+            font-size: 0.9em;
+        }
+        .jog-dial-canvas {
+            cursor: ns-resize;
+            border-radius: 50%;
+            /* 発色を強める */
+            box-shadow: 0 0 15px #ff00ff; /* ← ここを変更 */
+            transition: box-shadow 0.2s;
+        }
+        .jog-dial-canvas:hover {
+            box-shadow: 0 0 25px #ff33ff; /* ホバー時の色も少し明るく */
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div id="emotion-map-container">
+            <canvas id="myCanvas" tabindex="0" aria-label="感情マップキャンバス"></canvas>
+            <div class="axis-label label-arousal-pos">(Arousal+)</div>
+            <div class="axis-label label-arousal-neg">(Arousal-)</div>
+            <div class="axis-label label-valence-pos">(Valence+)</div>
+            <div class="axis-label label-valence-neg">(Valence-)</div>
+        </div>
+        <div id="controls">
+            <button id="sound-toggle-button">マップをクリックまたはボタンでサウンドを開始</button>
+            <div id="jog-dials-container"></div>
+        </div>
+    </div>
+
+    <script>
+        // CanvasRenderer クラス
+        class CanvasRenderer {
+            constructor(canvas) {
+                this.canvas = canvas;
+                this.ctx = canvas.getContext('2d');
+                this.dpr = window.devicePixelRatio || 1;
+            }
+
+            resizeCanvas(container) {
+                this.dpr = window.devicePixelRatio || 1;
+                this.canvas.width = container.clientWidth * this.dpr;
+                this.canvas.height = container.clientHeight * this.dpr;
+                this.canvas.style.width = `${container.clientWidth}px`;
+                this.canvas.style.height = `${container.clientHeight}px`;
+                this.ctx.scale(this.dpr, this.dpr);
+            }
+
+            drawCanvas(valence, arousal, marker) {
+                const width = this.canvas.width / this.dpr;
+                const height = this.canvas.height / this.dpr;
+
+                this.ctx.clearRect(0, 0, width, height);
+                
+                // グリッド線
+                this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
+                this.ctx.lineWidth = 1;
+                this.ctx.beginPath();
+                this.ctx.moveTo(width / 2, 0);
+                this.ctx.lineTo(width / 2, height);
+                this.ctx.moveTo(0, height / 2);
+                this.ctx.lineTo(width, height / 2);
+                this.ctx.stroke();
+
+                // マーカー
+                this.ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+                this.ctx.strokeStyle = 'var(--primary-color)'; // Use primary color
+                this.ctx.lineWidth = 3;
+                this.ctx.beginPath();
+                const r = 10 + arousal * 5; // Arousalでマーカーサイズ変化
+                this.ctx.arc(marker.x, marker.y, Math.max(5, r), 0, Math.PI * 2);
+                this.ctx.fill();
+                this.ctx.stroke();
+            }
+        }
+
+        // JogDial クラス
+        class JogDial {
+            constructor(containerId, label, min, max, initialValue, formatFn) {
+                this.min = min;
+                this.max = max;
+                this.value = initialValue;
+                this.label = label;
+                this.formatFn = formatFn || (val => val.toFixed(2));
+                
+                const wrapper = document.createElement('div');
+                wrapper.className = 'jog-dial-wrapper';
+                
+                this.canvas = document.createElement('canvas');
+                this.canvas.width = 100;
+                this.canvas.height = 100;
+                this.canvas.className = 'jog-dial-canvas';
+                wrapper.appendChild(this.canvas);
+                
+                const labelDiv = document.createElement('div');
+                labelDiv.textContent = label;
+                // CSSで色を設定するため、ここでは明示的に指定しない
+                // labelDiv.style.color = 'var(--text-color)'; 
+                labelDiv.style.fontSize = '0.9em';
+                wrapper.appendChild(labelDiv);
+
+                document.getElementById(containerId).appendChild(wrapper);
+                
+                this.ctx = this.canvas.getContext('2d'); // contextをここで取得
+                this.isDragging = false;
+                this.lastY = 0;
+                this.angle = this.valueToAngle(this.value);
+                this.setupEventListeners();
+                this.draw();
+            }
+
+            setupEventListeners() {
+                const handleStart = (e) => { this.isDragging = true; this.lastY = e.clientY || e.touches[0].clientY; this.canvas.style.cursor = 'grabbing'; };
+                const handleMove = (e) => { if (!this.isDragging) return; const clientY = e.clientY || e.touches[0].clientY; const deltaY = this.lastY - clientY; this.updateValue(e, deltaY); this.lastY = clientY; };
+                const handleEnd = () => { this.isDragging = false; this.canvas.style.cursor = 'ns-resize'; };
+                
+                this.canvas.addEventListener('mousedown', handleStart);
+                document.addEventListener('mousemove', handleMove);
+                document.addEventListener('mouseup', handleEnd);
+                this.canvas.addEventListener('touchstart', (e) => { e.preventDefault(); handleStart(e); }, { passive: false });
+                document.addEventListener('touchmove', (e) => { if (this.isDragging) e.preventDefault(); handleMove(e); }, { passive: false });
+                document.addEventListener('touchend', handleEnd);
+            }
+            
+            updateValue(event, delta) {
+                const range = this.max - this.min;
+                const sensitivity = event.shiftKey ? 0.1 : 1.0; // Shiftキーで微調整
+                const newValue = this.value + (delta / 200) * range * sensitivity;
+                this.value = Math.max(this.min, Math.min(this.max, newValue));
+                this.angle = this.valueToAngle(this.value);
+                this.draw();
+                this.canvas.dispatchEvent(new CustomEvent('change', { detail: { value: this.value } }));
+            }
+            
+            valueToAngle(value) {
+                const ratio = (value - this.min) / (this.max - this.min);
+                // -135度から135度まで (合計270度)
+                return (ratio * 270 - 135) * (Math.PI / 180);
+            }
+
+            draw() {
+                const ctx = this.ctx, w = this.canvas.width, h = this.canvas.height, cx = w/2, cy = h/2, radius = w/2 - 10;
+                ctx.clearRect(0, 0, w, h);
+
+                // 背景トラック
+                ctx.strokeStyle = '#444';
+                ctx.lineWidth = 4;
+                ctx.beginPath();
+                ctx.arc(cx, cy, radius, -135*(Math.PI/180), 135*(Math.PI/180));
+                ctx.stroke();
+
+                // 値のトラック (Primary Color)
+                ctx.strokeStyle = '#ff33ff'; /* ← ここをより鮮やかなマゼンタに変更 */
+                ctx.lineWidth = 6;
+                ctx.beginPath();
+                ctx.arc(cx, cy, radius, -135*(Math.PI/180), this.angle);
+                ctx.stroke();
+
+                // テキスト表示
+                ctx.fillStyle = '#fff'; /* ← ここを明示的に白に設定 */
+                ctx.textAlign = 'center';
+                ctx.font = '14px sans-serif';
+                ctx.fillText(this.label, cx, cy - 5);
+                ctx.font = 'bold 16px sans-serif';
+                ctx.fillText(this.formatFn(this.value), cx, cy + 15);
+            }
+        }
+        
+        // AudioEngine クラス
+        class AudioEngine {
+            constructor(audioContext) {
+                this.audioContext = audioContext;
+                this.nodes = {};
+                this.buildAudioGraph();
+            }
+
+            createOscillator(type) { const osc = this.audioContext.createOscillator(); osc.type = type; return osc; }
+            createOneShotNoiseSource() { const bufferSize = this.audioContext.sampleRate * 0.2; const buffer = this.audioContext.createBuffer(1, bufferSize, this.audioContext.sampleRate); const data = buffer.getChannelData(0); for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1; const source = this.audioContext.createBufferSource(); source.buffer = buffer; return source; }
+            makeDistortionCurve(amount) { const k = amount, n = 44100, curve = new Float32Array(n), deg = Math.PI/180; for (let i = 0; i < n; i++) { const x = i*2/n - 1; curve[i] = (3+k)*x*20*deg/(Math.PI+k*Math.abs(x)); } return curve; }
+
+            createAlgorithmicReverb(targetNode) {
+                const ac = this.audioContext;
+                const wetGain = ac.createGain(); wetGain.gain.value = 0; // 後でgainを設定
+                const input = ac.createGain();
+                const reverbBus = ac.createGain(); // リバーブのウェット信号が結合されるバス
+
+                input.connect(wetGain);
+                wetGain.connect(reverbBus);
+                reverbBus.connect(targetNode); // targetNode に接続
+
+                const delays = [0.031, 0.037, 0.043, 0.053]; // ショートディレイの数
+                delays.forEach(delayTime => {
+                    const delay = ac.createDelay(1.0); delay.delayTime.value = delayTime + Math.random() * 0.01;
+                    const feedback = ac.createGain(); feedback.gain.value = 0.6; // フィードバック量
+                    const filter = ac.createBiquadFilter(); filter.type = 'lowpass'; filter.frequency.value = 2500; // 高音をカット
+
+                    input.connect(delay);
+                    delay.connect(filter);
+                    filter.connect(feedback);
+                    feedback.connect(delay); // フィードバックループ
+                    delay.connect(reverbBus); // リバーブバスに接続
+                });
+                return { input, wetGain };
+            }
+            
+            buildAudioGraph() {
+                const ac = this.audioContext;
+                
+                // --- 新しいノードの追加と接続順序の変更 ---
+                // メインバス (ドライ信号用) - 各楽器が最初に接続
+                this.nodes.mainBus = ac.createGain(); 
+
+                // ディレイ
+                this.nodes.delay = ac.createDelay(4.0); // 最大ディレイタイムを少し長く (例: 4秒)
+                this.nodes.delayFeedback = ac.createGain();
+                this.nodes.delayFeedback.gain.value = 0.4; 
+                this.nodes.delayWet = ac.createGain(); 
+                this.nodes.delayWet.gain.value = 1.0; // デフォルトウェット量
+
+                this.nodes.delay.connect(this.nodes.delayFeedback);
+                this.nodes.delayFeedback.connect(this.nodes.delay); 
+                
+                this.nodes.mainBus.connect(this.nodes.delay);    
+                this.nodes.delay.connect(this.nodes.delayWet); 
+
+                // リバーブ
+                const reverb = this.createAlgorithmicReverb(ac.destination); 
+                this.nodes.reverbInput = reverb.input;
+                this.nodes.reverbWet = reverb.wetGain; 
+                this.nodes.reverbWet.gain.value = 0.5; 
+
+                // ドライ信号 (mainBus) とディレイのウェット信号をリバーブの入力に接続
+                this.nodes.mainBus.connect(this.nodes.reverbInput); 
+                this.nodes.delayWet.connect(this.nodes.reverbInput); 
+
+                // パン (StereoPannerNode)
+                this.nodes.panner = ac.createStereoPanner();
+                this.nodes.panner.pan.value = 0; // 初期は中央
+
+                // マスターゲイン
+                this.nodes.masterGain = ac.createGain(); 
+                this.nodes.masterGain.gain.value = 0; // 初期は無音
+
+                // 接続順序:
+                // mainBus -> panner -> masterGain -> destination
+                // reverbのウェット信号 -> panner -> masterGain -> destination
+                // （reverbは直接destinationに接続しない。pannerとmasterGainを通るように変更）
+
+                this.nodes.mainBus.connect(this.nodes.panner);
+                this.nodes.delayWet.connect(this.nodes.panner); // ディレイのウェットもpannerへ
+                this.nodes.reverbWet.connect(this.nodes.panner); // リバーブのウェットもpannerへ
+
+                this.nodes.panner.connect(this.nodes.masterGain);
+                this.nodes.masterGain.connect(ac.destination);
+            }
+        }
+        
+        // SoundscapeManager クラス
+        class SoundscapeManager {
+            constructor(canvasId) {
+                this.canvas = document.getElementById(canvasId);
+                if (!this.canvas) {
+                    console.error('Canvas element not found:', canvasId);
+                    return;
+                }
+                this.renderer = new CanvasRenderer(this.canvas);
+                this.audioEngine = null;
+                this.audioContext = null;
+                this.isInitialized = false;
+                this.isPlaying = false;
+                this.isDragging = false;
+                this.timers = {};
+
+                // サウンドパラメータの初期値 (新しいJogDial用のパラメータを追加)
+                this.params = { 
+                    masterVolume: 0.7, // 全体音量
+                    pan: 0,            // パン (-1: 左, 0: 中央, 1: 右)
+                    tempo: 120, 
+                    reverb: 0.5, 
+                    delayFeedback: 0.4,
+                    delayTime: 0.5,    // ディレイタイム (秒)
+                    kickGain: 1.0,     // キックの音量
+                    bassFilterCutoff: 500, // ベースのフィルターカットオフ
+                };
+
+                // 感情パラメータの初期値
+                this.valence = 0.0;
+                this.arousal = 0.0;
+
+                // marker を constructor で初期化
+                this.marker = { x: 0, y: 0 }; 
+                this.resizeCanvas(); // 初期化時にキャンバスサイズとマーカー位置を設定
+
+                this.createDials(); // ジョグダイヤルの作成
+                this.setupEventListeners();
+            }
+
+            createDials() {
+                // JogDialのコンテナ要素を取得
+                const jogDialsContainer = document.getElementById('jog-dials-container');
+                if (!jogDialsContainer) {
+                    console.error('Jog dials container not found!');
+                    return;
+                }
+                
+                this.dials = {
+                    masterVolume: new JogDial(jogDialsContainer.id, '全体音量', 0, 1, this.params.masterVolume, v => `${(v * 100).toFixed(0)}%`),
+                    pan: new JogDial(jogDialsContainer.id, 'パン', -1, 1, this.params.pan, v => v === 0 ? '中央' : `${v > 0 ? '右' : '左'} ${(Math.abs(v) * 100).toFixed(0)}%`),
+                    tempo: new JogDial(jogDialsContainer.id, 'テンポ', 80, 160, this.params.tempo, v => `${v.toFixed(0)} BPM`),
+                    reverb: new JogDial(jogDialsContainer.id, '空間', 0, 1, this.params.reverb, v => `${(v * 100).toFixed(0)}%`),
+                    delayFeedback: new JogDial(jogDialsContainer.id, '反響', 0, 0.9, this.params.delayFeedback, v => `${(v * 100).toFixed(0)}%`),
+                    delayTime: new JogDial(jogDialsContainer.id, 'ディレイタイム', 0.1, 2.0, this.params.delayTime, v => `${v.toFixed(2)}秒`),
+                    kickGain: new JogDial(jogDialsContainer.id, 'キック音量', 0, 2, this.params.kickGain, v => `x${v.toFixed(1)}`),
+                    bassFilterCutoff: new JogDial(jogDialsContainer.id, 'ベースFC', 50, 1000, this.params.bassFilterCutoff, v => `${v.toFixed(0)}Hz`),
+                };
+            }
+
+            // オーディオコンテキストの初期化 (ユーザー操作をトリガーに)
+            async init() {
+                if (this.isInitialized) return;
+                try {
+                    this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                    await this.audioContext.resume(); // サスペンド状態から再開
+                    this.audioEngine = new AudioEngine(this.audioContext);
+                    this.isInitialized = true;
+                    console.log("Techno Soundscape Manager Initialized.");
+                    // 初期化時にサウンドパラメータを一度適用
+                    this.updateSoundParameters(); 
+                } catch (e) {
+                    console.error("Failed to initialize audio context:", e);
+                    alert("オーディオの初期化に失敗しました。ブラウザがWeb Audio APIをサポートしているか、またはセキュリティ設定を確認してください。");
+                }
+            }
+
+            setupEventListeners() {
+                // サウンドON/OFFボタン
+                document.getElementById('sound-toggle-button').addEventListener('click', async () => {
+                    if (!this.isInitialized) {
+                        await this.init();
+                        if (!this.isInitialized) return; // 初期化失敗の場合は何もしない
+                    }
+                    this.toggleSound();
+                });
+
+                // ジョグダイヤルの値変更イベント
+                for (const [key, dial] of Object.entries(this.dials)) {
+                    dial.canvas.addEventListener('change', (e) => {
+                        this.params[key] = e.detail.value;
+                        if (this.isPlaying) this.updateSoundParameters();
+                    });
+                }
+
+                // マップ操作イベント
+                const handleMove = (e) => { if (this.isDragging) this.updatePosition(e); };
+                const handleDown = async (e) => {
+                    if (!this.isInitialized) {
+                        await this.init();
+                        if (!this.isInitialized) return;
+                    }
+                    // AudioContextがsuspendedの場合、再開を試みる
+                    if (this.audioContext && this.audioContext.state === 'suspended') {
+                        await this.audioContext.resume();
+                    }
+                    this.isDragging = true;
+                    this.updatePosition(e);
+                    // サウンドがまだ再生されていない場合、ここで開始
+                    if (!this.isPlaying) {
+                        this.toggleSound();
+                    }
+                };
+                const handleUp = () => { this.isDragging = false; };
+                
+                this.canvas.addEventListener('mousedown', handleDown);
+                document.addEventListener('mousemove', handleMove);
+                document.addEventListener('mouseup', handleUp);
+                
+                // タッチイベント
+                this.canvas.addEventListener('touchstart', handleDown, { passive: false });
+                this.canvas.addEventListener('touchmove', handleMove, { passive: false });
+                document.addEventListener('touchend', handleUp);
+            }
+            
+            updatePosition(e) {
+                e.preventDefault();
+                const rect = this.canvas.getBoundingClientRect();
+
+                let clientX = e.clientX;
+                let clientY = e.clientY;
+
+                if (e.touches && e.touches.length > 0) {
+                    clientX = e.touches[0].clientX;
+                    clientY = e.touches[0].clientY;
+                }
+
+                if (clientX === undefined || clientY === undefined) {
+                    console.warn("Could not get clientX or clientY from event.", e);
+                    return;
+                }
+
+                const rawX = clientX - rect.left;
+                const rawY = clientY - rect.top;
+
+                // マーカーの位置をキャンバスの範囲内に制限
+                this.marker.x = Math.max(0, Math.min(rect.width, rawX));
+                this.marker.y = Math.max(0, Math.min(rect.height, rawY));
+
+                // 感情パラメータの計算 (-1.0 to 1.0)
+                this.valence = (this.marker.x / rect.width) * 2 - 1;       // X軸: ネガティブ(-1) から ポジティブ(1)
+                this.arousal = -((this.marker.y / rect.height) * 2 - 1);  // Y軸: 高エネルギー(1) から 低エネルギー(-1)
+                                                                            // CanvasのY軸は下向きが正なので反転させる
+
+                this.renderer.drawCanvas(this.valence, this.arousal, this.marker);
+                if (this.isPlaying) this.updateSoundParameters();
+            }
+
+            toggleSound() {
+                if (!this.isInitialized) return; 
+                
+                const button = document.getElementById('sound-toggle-button');
+                const now = this.audioContext.currentTime;
+
+                if (this.isPlaying) {
+                    // フェードアウト
+                    this.audioEngine.nodes.masterGain.gain.cancelScheduledValues(now);
+                    this.audioEngine.nodes.masterGain.gain.linearRampToValueAtTime(0, now + 0.5);
+                    button.textContent = "サウンドを開始";
+                    clearInterval(this.timers.sequencer);
+                } else {
+                    // フェードイン
+                    this.updateSoundParameters(); // 現在の感情パラメータを反映
+                    this.audioEngine.nodes.masterGain.gain.cancelScheduledValues(now);
+                    // ここでmasterGainの目標値をparams.masterVolumeに設定
+                    this.audioEngine.nodes.masterGain.gain.linearRampToValueAtTime(this.params.masterVolume, now + 0.5); 
+                    button.textContent = "サウンドを停止";
+                    this.startSequencer();
+                }
+                this.isPlaying = !this.isPlaying;
+            }
+
+            startSequencer() {
+                // 既存のシーケンサーがあればクリア
+                if (this.timers.sequencer) {
+                    clearInterval(this.timers.sequencer);
+                }
+
+                this.noteTime = this.audioContext.currentTime;
+                this.currentStep = 0; // 16分音符のステップカウンター (0-15)
+
+                const loop = () => {
+                    const now = this.audioContext.currentTime;
+                    const tempo = this.dials.tempo.value;
+                    const secondsPerSixteenth = 60.0 / tempo / 4; // 16分音符あたりの秒数
+
+                    // リアルタイムでイベントをスケジューリング
+                    while (this.noteTime < now + 0.1) { // 0.1秒先までスケジューリング
+                        // キック (4分音符ごと)
+                        if (this.currentStep % 4 === 0) {
+                            this.triggerKick(this.noteTime);
+                        }
+                        // ハイハット (8分音符ごと)
+                        if (this.currentStep % 2 === 0) {
+                            this.triggerHihat(this.noteTime, this.currentStep);
+                        }
+                        // ベース (常に)
+                        this.triggerBass(this.noteTime, this.currentStep);
+                        // シンセ (特定のステップ)
+                        this.triggerSynth(this.noteTime, this.currentStep);
+                        // パッド (特定のステップ、追加された音)
+                        this.triggerPad(this.noteTime, this.currentStep); 
+
+                        this.noteTime += secondsPerSixteenth;
+                        this.currentStep = (this.currentStep + 1) % 16; // 0から15までループ
+                    }
+                };
+                // 25msごとにループをチェックしてスケジューリング
+                this.timers.sequencer = setInterval(loop, 25);
+            }
+
+            updateSoundParameters() {
+                if (!this.isInitialized || !this.audioEngine) return;
+                const now = this.audioContext.currentTime;
+                const t = 0.1; // パラメータ変化のタイム定数 (滑らかさ)
+
+                // ジョグダイヤルの値をオーディオノードに適用
+                this.audioEngine.nodes.masterGain.gain.setTargetAtTime(this.params.masterVolume, now, t);
+                this.audioEngine.nodes.panner.pan.setTargetAtTime(this.params.pan, now, t);
+                this.audioEngine.nodes.delay.delayTime.setTargetAtTime(this.params.delayTime, now, t); // ディレイタイム
+                this.audioEngine.nodes.delayFeedback.gain.setTargetAtTime(this.params.delayFeedback, now, t);
+                this.audioEngine.nodes.reverbWet.gain.setTargetAtTime(this.params.reverb, now, t);
+
+                // 各楽器のゲインやフィルターはそれぞれのtrigger関数内で設定されるため、ここでは個別のパラメータは変更しない
+                // ただし、もし個別の楽器のグローバルなゲインコントロールなどが必要であればここに追加する
+            }
+            
+            // 以下、各楽器のトリガーメソッド (一部感情パラメータによる調整を強化)
+
+            triggerKick(time) {
+                const ac = this.audioContext;
+                const { mainBus } = this.audioEngine.nodes; 
+
+                const osc = this.audioEngine.createOscillator('sine');
+                const env = ac.createGain();
+                const waveShaper = ac.createWaveShaper();
+
+                waveShaper.curve = this.audioEngine.makeDistortionCurve(25 + this.arousal * 40 + Math.random() * 10); 
+
+                const pitch = 60 - (1 - (this.valence + 1) / 2) * 20 + Math.random() * 2; 
+                osc.frequency.setValueAtTime(pitch, time);
+                osc.frequency.exponentialRampToValueAtTime(30, time + 0.15); 
+
+                env.gain.setValueAtTime(0, time);
+                // キック音量のJogDial値を適用
+                env.gain.linearRampToValueAtTime((2.5 + this.arousal * 0.5) * this.params.kickGain, time + 0.01); 
+                env.gain.exponentialRampToValueAtTime(0.001, time + 0.2); 
+
+                osc.connect(waveShaper);
+                waveShaper.connect(env);
+                env.connect(mainBus); 
+
+                osc.start(time);
+                osc.stop(time + 0.2);
+            }
+
+            triggerHihat(time, step) {
+                const ac = this.audioContext;
+                const { mainBus } = this.audioEngine.nodes; 
+
+                const noise = this.audioEngine.createOneShotNoiseSource();
+                const filter = ac.createBiquadFilter();
+                const env = ac.createGain();
+
+                filter.type = 'highpass';
+                const openDecay = 0.05 + Math.abs(this.valence) * 0.2 + Math.random() * 0.05; 
+                const decay = (step % 4 === 2 || this.arousal > 0.5 + Math.random() * 0.2) ? openDecay : 0.05; 
+                const cutoff = 5000 + this.arousal * 3000 + Math.random() * 500; 
+
+                filter.frequency.setValueAtTime(cutoff, time);
+                filter.Q.value = 10;
+
+                env.gain.setValueAtTime(0, time);
+                env.gain.linearRampToValueAtTime(1.0, time + 0.01);
+                env.gain.exponentialRampToValueAtTime(0.001, time + decay);
+
+                noise.connect(filter);
+                filter.connect(env);
+                env.connect(mainBus); 
+
+                noise.start(time);
+            }
+
+            triggerBass(time, step) {
+                const ac = this.audioContext;
+                const { mainBus } = this.audioEngine.nodes; 
+
+                const aNorm = (this.arousal + 1) / 2; 
+                const vNorm = (this.valence + 1) / 2; 
+
+                const patternMajor = [0, 0, 7, 0, 5, 0, 3, 0]; 
+                const patternMinor = [0, 0, 7, 0, 5, 0, 8, 0]; 
+
+                const selectedPattern = vNorm > 0.5 ? patternMajor : patternMinor;
+                const noteIndex = selectedPattern[step % 8];
+                
+                if (Math.random() > (0.8 + aNorm * 0.1 - 0.1 * Math.random()) && step % 2 !== 0) return; 
+
+                const osc = this.audioEngine.createOscillator('sawtooth');
+                const filter = ac.createBiquadFilter();
+                const env = ac.createGain();
+
+                const freq = 440 * Math.pow(2, (36 + noteIndex - 69) / 12); 
+                osc.frequency.setValueAtTime(freq, time);
+
+                filter.type = 'lowpass';
+                // ベースフィルターカットオフのJogDial値を適用
+                filter.frequency.setValueAtTime(this.params.bassFilterCutoff + aNorm * 1000 + Math.random() * 200, time); 
+                filter.Q.value = 5 + vNorm * 10 + Math.random() * 2; 
+
+                env.gain.setValueAtTime(0, time);
+                env.gain.linearRampToValueAtTime(0.5, time + 0.01);
+                env.gain.exponentialRampToValueAtTime(0.001, time + 0.15 + Math.random() * 0.05); 
+
+                osc.connect(filter);
+                filter.connect(env);
+                env.connect(mainBus); 
+
+                osc.start(time);
+                osc.stop(time + 0.15 + Math.random() * 0.05);
+            }
+
+            triggerSynth(time, step) {
+                if (step % 4 !== 1 && step % 8 !== 3 && step % 16 !== 7) return; 
+                
+                const ac = this.audioContext;
+                const { mainBus } = this.audioEngine.nodes; 
+
+                const vNorm = (this.valence + 1) / 2; 
+                const aNorm = (this.arousal + 1) / 2; 
+
+                const scaleMajor = [0, 2, 4, 7, 9]; 
+                const scaleMinor = [0, 3, 5, 7, 10]; 
+
+                const scale = vNorm > 0.5 ? scaleMajor : scaleMinor;
+                const note = scale[Math.floor(Math.random() * scale.length)]; 
+                
+                const octaveShift = aNorm > 0.5 ? 12 : 0;
+                const freq = 420 * Math.pow(2, (60 + note + octaveShift - 69) / 12) + Math.random() * 5; 
+
+                const osc = this.audioEngine.createOscillator(aNorm > 0.5 ? 'sawtooth' : 'triangle'); 
+                const filter = ac.createBiquadFilter();
+                const env = ac.createGain();
+
+                osc.frequency.value = freq;
+
+                filter.type = 'lowpass';
+                filter.frequency.setValueAtTime(700 + aNorm * 4000 + Math.random() * 300, time); 
+                filter.Q.value = 1 + aNorm * 15 + Math.random() * 3; 
+
+                const release = 0.2 + (1 - aNorm) * 0.3 + Math.random() * 0.1; 
+                env.gain.setValueAtTime(0, time);
+                env.gain.linearRampToValueAtTime(0.4, time + 0.01);
+                env.gain.linearRampToValueAtTime(0.3 + vNorm * 0.3 + Math.random() * 0.1, time + 0.11); 
+                env.gain.linearRampToValueAtTime(0, time + 0.11 + release);
+
+                osc.connect(filter);
+                filter.connect(env);
+                env.connect(mainBus); 
+
+                osc.start(time);
+                osc.stop(time + 0.11 + release);
+            }
+
+            triggerPad(time, step) {
+                if (step % 8 !== 7 && step % 16 !== 15 && Math.random() > 0.3) return; 
+
+                const ac = this.audioContext;
+                const { mainBus } = this.audioEngine.nodes;
+
+                const vNorm = (this.valence + 1) / 2; 
+                const aNorm = (this.arousal + 1) / 2; 
+
+                const osc1 = this.audioEngine.createOscillator('sawtooth');
+                const osc2 = this.audioEngine.createOscillator('triangle'); 
+                const gain = ac.createGain();
+                const filter = ac.createBiquadFilter();
+
+                const baseNote = 48; 
+                const chordType = vNorm > 0.5 ? [0, 4, 7, 11] : [0, 3, 7, 10]; 
+                const chordIndex = Math.floor(Math.random() * chordType.length); 
+                const freq = 440 * Math.pow(2, (baseNote + chordType[chordIndex] - 69) / 12) + (Math.random() - 0.5) * 2; 
+
+                osc1.frequency.value = freq;
+                osc2.frequency.value = freq * (1.005 + aNorm * 0.005 + (Math.random() - 0.5) * 0.002); 
+
+                filter.type = 'lowpass';
+                filter.frequency.setValueAtTime(200 + aNorm * 2000 + Math.random() * 100, time); 
+                filter.Q.value = 2 + aNorm * 5 + Math.random() * 1; 
+
+                const attack = 1.0 + (1 - aNorm) * 1.0 + Math.random() * 0.5; 
+                const decay = 0.8;
+                const sustain = 0.4 + vNorm * 0.4 + Math.random() * 0.1; 
+                const release = 2.0 + (1 - vNorm) * 2.0 + Math.random() * 1.0; 
+
+                gain.gain.setValueAtTime(0, time);
+                gain.gain.linearRampToValueAtTime(0.3, time + attack); 
+                gain.gain.linearRampToValueAtTime(0.3 * sustain, time + attack + decay); 
+                gain.gain.linearRampToValueAtTime(0.001, time + attack + decay + release); 
+
+                osc1.connect(gain);
+                osc2.connect(gain);
+                gain.connect(filter);
+                filter.connect(mainBus); 
+
+                osc1.start(time);
+                osc2.start(time);
+                osc1.stop(time + attack + decay + release + 0.1); 
+                osc2.stop(time + attack + decay + release + 0.1);
+            }
+
+            resizeCanvas() {
+                const emotionMapContainer = document.getElementById('emotion-map-container');
+                if (emotionMapContainer) {
+                    this.renderer.resizeCanvas(emotionMapContainer);
+                } else {
+                    console.error("Emotion map container not found.");
+                    return;
+                }
+                
+                this.marker.x = this.canvas.clientWidth / 2;
+                this.marker.y = this.canvas.clientHeight / 2;
+
+                this.valence = 0.0;
+                this.arousal = 0.0;
+
+                this.renderer.drawCanvas(this.valence, this.arousal, this.marker);
+                
+                if (this.isPlaying) this.updateSoundParameters();
+            }
+        }
+
+        // --- 初期化処理 ---
+        window.addEventListener('DOMContentLoaded', () => {
+            const manager = new SoundscapeManager('myCanvas');
+
+            const initOnce = (e) => {
+                const target = e.target;
+                if (target.id === 'myCanvas' || target.id === 'sound-toggle-button') {
+                    document.body.removeEventListener('mousedown', initOnce, true);
+                    document.body.removeEventListener('touchstart', initOnce, true);
+                    manager.init();
+                }
+            };
+            document.body.addEventListener('mousedown', initOnce, true);
+            document.body.addEventListener('touchstart', initOnce, true);
+
+            window.addEventListener('resize', () => {
+                manager.resizeCanvas();
+            });
+        });
+    </script>
+</body>
+</html>
