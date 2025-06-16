@@ -1,0 +1,5 @@
+{
+  "name": "Techno Soundscape Generator",
+  "description": "An interactive web application that allows users to generate and manipulate techno music soundscapes based on emotional input and parameter controls. Uses Web Audio API for sound synthesis.",
+  "requestFramePermissions": []
+}
