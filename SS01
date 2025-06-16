@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>感情のサウンドスケープ</title>
+    <style>
+        :root {
+            --bg-color: #1a1a1a;
+            --text-color: #e8e8e8;
+            --primary-color: #00aaff;
+            --card-bg: #2a2a2e;
+            --border-color: #444;
+            --shadow-color: rgba(0, 0, 0, 0.4);
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            line-height: 1.6;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-height: 100vh;
+            box-sizing: border-box;
+            /* 修正: overflow: hidden; を削除 */
+        }
+        .container {
+            max-width: 800px;
+            width: 100%;
+        }
+        #error-message {
+            color: #ff6b6b;
+            text-align: center;
+            margin-bottom: 1rem;
+            min-height: 1.2em;
+        }
+        #emotion-map-container {
+            position: relative;
+            width: 100%;
+            padding-top: 50%; /* アスペクト比 2:1 */
+            margin-top: 1rem;
+            border-radius: 12px;
+            overflow: hidden;
+            border: 1px solid var(--border-color);
+        }
+        #myCanvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            cursor: crosshair;
+            background-image:
+                radial-gradient(circle at 100% 100%, rgba(135, 206, 250, 0.6), transparent 70%), /* 青 - 右下 */
+                radial-gradient(circle at 100% 0%, rgba(255, 255, 150, 0.7), transparent 70%), /* 黄 - 右上 */
+                radial-gradient(circle at 0% 0%, rgba(255, 100, 100, 0.6), transparent 70%), /* 赤 - 左上 */
+                radial-gradient(circle at 0% 100%, rgba(180, 180, 220, 0.6), transparent 70%); /* 紫 - 左下 */
+        }
+        .axis-label {
+            position: absolute;
+            font-size: 0.8rem;
+            color: #bbb;
+            background-color: rgba(42, 42, 46, 0.8);
+            padding: 2px 8px;
+            border-radius: 4px;
+            user-select: none;
+        }
+        .label-arousal-pos { top: 10px; left: 50%; transform: translateX(-50%); }
+        .label-arousal-neg { bottom: 10px; left: 50%; transform: translateX(-50%); }
+        .label-valence-pos { top: 50%; right: 10px; transform: translateY(-50%); }
+        .label-valence-neg { top: 50%; left: 10px; transform: translateY(-50%); }
+        #controls {
+            margin-top: 20px;
+            padding: 20px;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            background-color: var(--card-bg);
+            display: grid;
+            grid-template-columns: 150px 1fr;
+            gap: 15px;
+            align-items: center;
+            width: 100%;
+            box-sizing: border-box;
+        }
+        #controls label {
+            font-weight: bold;
+            text-align: right;
+            padding-right: 10px;
+        }
+        #controls input[type="range"] {
+            width: 100%;
+        }
+        #controls button {
+            grid-column: 1 / -1;
+            padding: 10px 15px;
+            font-size: 1em;
+            cursor: pointer;
+            border-radius: 5px;
+            border: 1px solid var(--primary-color);
+            background-color: var(--card-bg);
+            color: var(--primary-color);
+            transition: background-color 0.2s, color 0.2s;
+        }
+        #controls button:hover {
+            background-color: var(--primary-color);
+            color: #fff;
+        }
+        @media (max-width: 600px) {
+            #controls {
+                grid-template-columns: 1fr;
+                gap: 10px;
+            }
+            #controls label {
+                text-align: left;
+            }
+            #emotion-map-container {
+                padding-top: 75%;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div id="error-message"></div>
+        <div id="emotion-map-container">
+            <canvas id="myCanvas" tabindex="0" aria-label="感情マップキャンバス"></canvas>
+            <div class="axis-label label-arousal-pos">Arousal (+)</div>
+            <div class="axis-label label-arousal-neg">Arousal (-)</div>
+            <div class="axis-label label-valence-pos">Valence (+)</div>
+            <div class="axis-label label-valence-neg">Valence (-)</div>
+        </div>
+        <div id="controls">
+            <button id="sound-toggle-button">マップをクリックしてサウンドを開始</button>
+            <label for="reverb-slider">響き (Reverb):</label>
+            <input type="range" id="reverb-slider" min="0.0" max="1.0" step="0.01" value="0.5" aria-label="リバーブ調整">
+            <label for="brightness-slider">明るさ (Filter):</label>
+            <input type="range" id="brightness-slider" min="0.0" max="1.0" step="0.01" value="0.5" aria-label="フィルター明るさ調整">
+            <label for="transition-speed-slider">変化の滑らかさ:</label>
+            <input type="range" id="transition-speed-slider" min="0.05" max="1.0" step="0.01" value="0.2" aria-label="トランジション速度調整">
+        </div>
+    </div>
+
+    <script>
+        class AudioEngine {
+            constructor(audioContext) {
+                this.audioContext = audioContext;
+                this.nodes = {};
+                this.buildAudioGraph();
+                this.startPersistentSources(); // 持続的に鳴る音源をここで開始
+            }
+
+            // --- ヘルパーメソッド ---
+            createOscillator(type, target) {
+                const osc = this.audioContext.createOscillator();
+                osc.type = type;
+                if (target) osc.connect(target);
+                return osc;
+            }
+
+            // [FIXED] クラックル音のような一度きりの音のためのノイズ音源を生成する
+            createOneShotNoiseSource() {
+                const bufferSize = this.audioContext.sampleRate * 0.2; // 短いバッファで十分
+                const buffer = this.audioContext.createBuffer(1, bufferSize, this.audioContext.sampleRate);
+                const data = buffer.getChannelData(0);
+                for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
+                const source = this.audioContext.createBufferSource();
+                source.buffer = buffer;
+                source.loop = false; // ループしない
+                return source;
+            }
+            
+            // [FIXED] アンビエントノイズのような持続音のためのノイズ音源を生成する
+            createLoopingNoiseSource() {
+                const bufferSize = this.audioContext.sampleRate * 2; // ループ用に長めのバッファ
+                const buffer = this.audioContext.createBuffer(1, bufferSize, this.audioContext.sampleRate);
+                const data = buffer.getChannelData(0);
+                for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
+                const source = this.audioContext.createBufferSource();
+                source.buffer = buffer;
+                source.loop = true; // ループさせる
+                return source;
+            }
+
+            createPinkNoiseFilter() {
+                const filter = this.audioContext.createBiquadFilter();
+                filter.type = 'lowpass';
+                filter.frequency.value = 1200; // ピンクノイズに近い特性を得るために調整
+                return filter;
+            }
+
+            createImpulseResponse() {
+                const ac = this.audioContext, len = ac.sampleRate * 3.5;
+                const imp = ac.createBuffer(2, len, ac.sampleRate);
+                for (let ch=0; ch<2; ch++) {
+                    const data = imp.getChannelData(ch);
+                    for (let i=0; i<len; i++) data[i] = (Math.random()*2-1)*Math.pow(1-i/len, 4);
+                }
+                return imp;
+            }
+
+            makeDistortionCurve(amount) {
+                const samples = 44100, curve = new Float32Array(samples), deg = Math.PI / 180;
+                for (let i=0; i<samples; ++i) {
+                    const x = (i*2)/samples - 1;
+                    curve[i] = ((3+amount)*x*20*deg)/(Math.PI+amount*Math.abs(x));
+                }
+                return curve;
+            }
+
+            // --- オーディオグラフの構築 [REFACTORED] ---
+            buildAudioGraph() {
+                const ac = this.audioContext;
+                this.nodes.masterGain = ac.createGain();
+                this.nodes.masterGain.gain.value = 0;
+                this.nodes.masterGain.connect(ac.destination);
+
+                // 全ての音源をまとめるメインバス
+                const sourceBus = ac.createGain();
+
+                // 空間定位
+                this.nodes.panner = ac.createPanner ? ac.createPanner() : ac.createStereoPanner(); // 古いブラウザ用のフォールバック
+                if (this.nodes.panner.panningModel) { // PannerNodeの場合
+                    this.nodes.panner.panningModel = 'HRTF';
+                }
+                sourceBus.connect(this.nodes.panner);
+
+                // メインフィルター
+                this.nodes.filter = ac.createBiquadFilter();
+                this.nodes.panner.connect(this.nodes.filter);
+
+                // ドライ/ウェットの分岐点
+                const postFilterBus = ac.createGain();
+                this.nodes.filter.connect(postFilterBus);
+                
+                // ウェットパス (リバーブ)
+                this.nodes.reverb = ac.createConvolver();
+                this.nodes.reverb.buffer = this.createImpulseResponse();
+                this.nodes.reverbWetGain = ac.createGain();
+                postFilterBus.connect(this.nodes.reverb);
+                this.nodes.reverb.connect(this.nodes.reverbWetGain);
+                this.nodes.reverbWetGain.connect(this.nodes.masterGain);
+
+                // ドライパス
+                this.nodes.reverbDryGain = ac.createGain();
+                postFilterBus.connect(this.nodes.reverbDryGain);
+                this.nodes.reverbDryGain.connect(this.nodes.masterGain);
+
+                // ディストーションは並列で追加
+                this.nodes.distortion = ac.createWaveShaper();
+                this.nodes.distortionGain = ac.createGain();
+                postFilterBus.connect(this.nodes.distortion);
+                this.nodes.distortion.connect(this.nodes.distortionGain);
+                this.nodes.distortionGain.connect(this.nodes.masterGain);
+
+                // --- 音源 ---
+                // パッド (加算合成)
+                this.nodes.padGain = ac.createGain();
+                this.nodes.padOsc1 = this.createOscillator('sine', this.nodes.padGain);
+                this.nodes.padOsc2 = this.createOscillator('sine', this.nodes.padGain);
+                this.nodes.padOsc3 = this.createOscillator('sine', this.nodes.padGain);
+                this.nodes.padGain.connect(sourceBus);
+                
+                // LFO (ビブラート/トレモロ)
+                this.nodes.lfo = this.createOscillator('sine');
+                this.nodes.lfo.frequency.value = 0.5;
+                this.nodes.lfoGain = ac.createGain();
+                this.nodes.lfo.connect(this.nodes.lfoGain);
+                this.nodes.lfoGain.connect(this.nodes.padGain.gain);
+
+                // ピンクノイズ
+                this.nodes.noiseGain = ac.createGain();
+                this.nodes.noiseFilter = this.createPinkNoiseFilter();
+                this.nodes.noise = this.createLoopingNoiseSource();
+                this.nodes.noise.connect(this.nodes.noiseFilter);
+                this.nodes.noiseFilter.connect(this.nodes.noiseGain);
+                this.nodes.noiseGain.connect(sourceBus);
+
+                // イベントバス
+                this.nodes.eventBus = ac.createGain();
+                this.nodes.eventBus.connect(sourceBus);
+            }
+
+            // [FIXED] ページロード時に常に鳴り始める音源をここで開始
+            startPersistentSources() {
+                // オシレーターとLFOはAudioContextがresumeされたらすぐに音を出す
+                this.nodes.padOsc1.start(0);
+                this.nodes.padOsc2.start(0);
+                this.nodes.padOsc3.start(0);
+                this.nodes.lfo.start(0);
+                this.nodes.noise.start(0); // ノイズも持続的に鳴らす
+            }
+        }
+
+        class CanvasRenderer {
+            constructor(canvas) {
+                this.canvas = canvas;
+                this.ctx = canvas.getContext('2d');
+                this.drawPending = false;
+            }
+
+            drawCanvas(valence, arousal, marker, canvasWidth, canvasHeight) {
+                if (this.drawPending) return;
+                this.drawPending = true;
+                requestAnimationFrame(() => {
+                    this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+                    this.ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+                    this.ctx.strokeStyle = 'rgba(0, 170, 255, 1)';
+                    this.ctx.lineWidth = 3;
+                    this.ctx.beginPath();
+                    const r = 10 + arousal * 5;
+                    this.ctx.arc(marker.x, marker.y, Math.max(5, r), 0, Math.PI * 2);
+                    this.ctx.fill();
+                    this.ctx.stroke();
+                    this.ctx.fillStyle = '#fff';
+                    this.ctx.font = 'bold 14px sans-serif';
+                    this.ctx.textAlign = 'center';
+                    this.ctx.textBaseline = 'top';
+                    this.ctx.fillText(`Valence: ${valence.toFixed(2)}, Arousal: ${arousal.toFixed(2)}`, canvasWidth / 2, 10);
+                    this.drawPending = false;
+                });
+            }
+
+            resizeCanvas(container) {
+                this.canvas.width = container.clientWidth;
+                this.canvas.height = container.clientHeight;
+            }
+        }
+
+        class SoundscapeManager {
+            constructor(canvasId) {
+                this.canvas = document.getElementById(canvasId);
+                this.renderer = new CanvasRenderer(this.canvas);
+                this.audioEngine = null;
+                this.audioContext = null;
+                this.isInitialized = false;
+                this.isPlaying = false;
+                this.isDragging = false;
+                this.timers = {};
+                this.params = { reverb: 0.5, brightness: 0.5, transitionTime: 0.2 };
+                this.valence = 0.0;
+                this.arousal = 0.0;
+                this.renderer.resizeCanvas(document.getElementById('emotion-map-container'));
+                this.marker = { x: this.canvas.width / 2, y: this.canvas.height / 2 };
+                this.renderer.drawCanvas(this.valence, this.arousal, this.marker, this.canvas.width, this.canvas.height);
+
+                this.setupEventListeners(); // イベントリスナーは初期化前に設定
+            }
+
+            async init() {
+                if (this.isInitialized) return;
+                try {
+                    this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                    if (this.audioContext.state === 'suspended') {
+                        await this.audioContext.resume();
+                    }
+                    this.audioEngine = new AudioEngine(this.audioContext);
+                    // this.audioEngine.startAllSources(); // AudioEngineのコンストラクタで開始するように変更
+                    this.isInitialized = true;
+                    console.log("Soundscape Manager Initialized.");
+                } catch (e) {
+                    console.error("Failed to initialize audio context:", e);
+                    document.getElementById('error-message').textContent = 'オーディオがサポートされていません。';
+                }
+            }
+
+            setupEventListeners() {
+                document.getElementById('sound-toggle-button').addEventListener('click', async () => {
+                    // [修正] initが非同期なのでawaitで完了を待つ
+                    if (!this.isInitialized) {
+                        await this.init(); 
+                    }
+                    this.toggleSound();
+                });
+                const updateParam = (param, value) => { this.params[param] = parseFloat(value); if (this.isPlaying) this.updateSoundParameters(); };
+                document.getElementById('reverb-slider').addEventListener('input', (e) => updateParam('reverb', e.target.value));
+                document.getElementById('brightness-slider').addEventListener('input', (e) => updateParam('brightness', e.target.value));
+                document.getElementById('transition-speed-slider').addEventListener('input', (e) => updateParam('transitionTime', e.target.value));
+                
+                const handleMove = (e) => { if (this.isDragging) this.updatePosition(e); };
+                const handleDown = async (e) => { 
+                    // [修正] クリックでinitを試みる
+                    if (!this.isInitialized) {
+                        await this.init();
+                    }
+                    this.isDragging = true; 
+                    if (this.audioContext && this.audioContext.state === 'suspended') {
+                        this.audioContext.resume();
+                    }
+                    this.updatePosition(e); 
+                };
+                const handleUp = () => { this.isDragging = false; };
+
+                this.canvas.addEventListener('mousedown', handleDown);
+                document.addEventListener('mousemove', handleMove);
+                document.addEventListener('mouseup', handleUp);
+                this.canvas.addEventListener('touchstart', handleDown, { passive: false });
+                this.canvas.addEventListener('touchmove', handleMove, { passive: false });
+                document.addEventListener('touchend', handleUp);
+            }
+
+            updatePosition(e) {
+                e.preventDefault();
+                const rect = this.canvas.getBoundingClientRect();
+                const x = e.clientX ?? (e.touches ? e.touches[0].clientX : 0);
+                const y = e.clientY ?? (e.touches ? e.touches[0].clientY : 0);
+                this.marker.x = Math.max(0, Math.min(this.canvas.width, x - rect.left));
+                this.marker.y = Math.max(0, Math.min(this.canvas.height, y - rect.top));
+                this.valence = (this.marker.x / this.canvas.width) * 2 - 1;
+                this.arousal = -((this.marker.y / this.canvas.height) * 2 - 1);
+                this.renderer.drawCanvas(this.valence, this.arousal, this.marker, this.canvas.width, this.canvas.height);
+                if (this.isPlaying) this.updateSoundParameters();
+            }
+
+            toggleSound() {
+                if (!this.audioEngine) return;
+                const button = document.getElementById('sound-toggle-button');
+                const now = this.audioContext.currentTime;
+                const fadeTime = 1.0;
+
+                if (this.isPlaying) {
+                    this.audioEngine.nodes.masterGain.gain.cancelScheduledValues(now);
+                    this.audioEngine.nodes.masterGain.gain.linearRampToValueAtTime(0, now + fadeTime);
+                    button.textContent = "サウンド再生";
+                    this.stopScheduledEvents();
+                } else {
+                    this.updateSoundParameters();
+                    this.audioEngine.nodes.masterGain.gain.cancelScheduledValues(now);
+                    this.audioEngine.nodes.masterGain.gain.linearRampToValueAtTime(0.5, now + fadeTime);
+                    button.textContent = "サウンド停止";
+                    this.startScheduledEvents();
+                }
+                this.isPlaying = !this.isPlaying;
+            }
+
+            updateSoundParameters() {
+                if (!this.isInitialized || !this.isPlaying) return;
+                const now = this.audioContext.currentTime;
+                const t = this.params.transitionTime;
+                const vNorm = (this.valence + 1) / 2;
+                const aNorm = (this.arousal + 1) / 2;
+
+                const baseFreq = 55;
+                this.audioEngine.nodes.padOsc1.frequency.setTargetAtTime(baseFreq, now, t);
+                const interval1 = 1.2 + vNorm * 0.3;
+                this.audioEngine.nodes.padOsc2.frequency.setTargetAtTime(baseFreq * interval1, now, t);
+                const interval2 = 1.5 - (1 - vNorm) * 0.3;
+                this.audioEngine.nodes.padOsc3.frequency.setTargetAtTime(baseFreq * interval2, now, t);
+                const padGain = 0.3 * (1 - aNorm * 0.5);
+                this.audioEngine.nodes.padGain.gain.setTargetAtTime(padGain, now, t);
+                const lfoFreq = 0.2 + aNorm * 2.0;
+                const lfoDepth = aNorm * 0.1;
+                this.audioEngine.nodes.lfo.frequency.setTargetAtTime(lfoFreq, now, t);
+                this.audioEngine.nodes.lfoGain.gain.setTargetAtTime(lfoDepth, now, t);
+                const noiseGain = (0.1 + aNorm * 0.2) * (1 + (1 - vNorm) * 0.5);
+                this.audioEngine.nodes.noiseGain.gain.setTargetAtTime(noiseGain, now, t);
+                if (this.audioEngine.nodes.panner.pan) {
+                    this.audioEngine.nodes.panner.pan.setTargetAtTime(this.valence, now, t);
+                } else {
+                    this.audioEngine.nodes.panner.positionX.setTargetAtTime(this.valence * 3, now, t);
+                }
+                const sliderCutoff = 200 * Math.pow(20000 / 200, this.params.brightness);
+                const finalCutoff = sliderCutoff * (0.5 + aNorm * 1.5);
+                this.audioEngine.nodes.filter.frequency.setTargetAtTime(finalCutoff, now, t);
+                const qValue = 1.0 + aNorm * 4.0 + (1 - vNorm) * 2.0;
+                this.audioEngine.nodes.filter.Q.setTargetAtTime(qValue, now, t);
+                const finalReverbWet = this.params.reverb * (0.3 + (1 - aNorm) * 0.7);
+                this.audioEngine.nodes.reverbWetGain.gain.setTargetAtTime(finalReverbWet, now, t);
+                this.audioEngine.nodes.reverbDryGain.gain.setTargetAtTime(1.0 - finalReverbWet, now, t);
+                const distAmount = (this.valence < 0 && this.arousal > 0) ? Math.abs(this.valence) * aNorm * 50 : 0;
+                this.audioEngine.nodes.distortion.curve = this.audioEngine.makeDistortionCurve(distAmount);
+                this.audioEngine.nodes.distortionGain.gain.setTargetAtTime(distAmount > 0 ? 0.2 : 0, now, t);
+            }
+
+            startScheduledEvents() {
+                this.scheduleNextEvent(this.triggerBell, 'bell');
+                this.scheduleNextEvent(this.triggerCrackle, 'crackle');
+            }
+
+            stopScheduledEvents() {
+                clearTimeout(this.timers.bell);
+                clearTimeout(this.timers.crackle);
+            }
+
+            scheduleNextEvent(triggerFn, timerName) {
+                const aNorm = (this.arousal + 1) / 2;
+                let baseInterval, randomRange;
+                if (timerName === 'bell') {
+                    baseInterval = 6000 - aNorm * 4000;
+                    randomRange = 3000;
+                } else {
+                    baseInterval = 800 - aNorm * 600;
+                    randomRange = 400;
+                }
+                const interval = baseInterval + Math.random() * randomRange;
+                this.timers[timerName] = setTimeout(() => {
+                    if (this.isPlaying) {
+                        triggerFn.call(this);
+                        this.scheduleNextEvent(triggerFn, timerName);
+                    }
+                }, interval);
+            }
+
+            triggerBell() {
+                const ac = this.audioContext;
+                const now = ac.currentTime;
+                const car = this.audioEngine.createOscillator('sine');
+                const mod = this.audioEngine.createOscillator('sine');
+                const modGain = ac.createGain();
+                const env = ac.createGain();
+                const baseFreq = 220 + (this.valence+1)/2 * 440;
+                mod.frequency.value = baseFreq * (1.4 + (1-(this.valence+1)/2)*0.5);
+                modGain.gain.value = baseFreq * (2 + (this.arousal+1)/2 * 3);
+                car.frequency.value = baseFreq;
+                mod.connect(modGain);
+                modGain.connect(car.frequency);
+                car.connect(env);
+                env.connect(this.audioEngine.nodes.eventBus);
+                const gain = 0.3 * (0.5 + (this.arousal+1)/2 * 0.5);
+                const attack = 0.01 + (1-(this.arousal+1)/2) * 0.1;
+                const decay = 1.5 + (this.valence+1)/2 * 2.0;
+                env.gain.setValueAtTime(0, now);
+                env.gain.linearRampToValueAtTime(gain, now + attack);
+                env.gain.exponentialRampToValueAtTime(0.0001, now + decay);
+                car.start(now); mod.start(now);
+                car.stop(now + decay); mod.stop(now + decay);
+            }
+
+            triggerCrackle() {
+                const ac = this.audioContext;
+                const now = ac.currentTime;
+                // [修正] OneShotNoiseSourceは一度きりなので、毎回生成して接続する
+                const noise = this.audioEngine.createOneShotNoiseSource();
+                const filter = ac.createBiquadFilter();
+                filter.type = 'bandpass';
+                filter.frequency.value = 1000 + Math.random() * 3000;
+                filter.Q.value = 15 + Math.random() * 10;
+                const env = ac.createGain();
+                noise.connect(filter);
+                filter.connect(env);
+                env.connect(this.audioEngine.nodes.eventBus);
+                const gain = 0.15 * (0.5 + (this.arousal+1)/2 * 0.5);
+                env.gain.setValueAtTime(0, now);
+                env.gain.linearRampToValueAtTime(gain, now + 0.005);
+                env.gain.exponentialRampToValueAtTime(0.0001, now + 0.1);
+                noise.start(now);
+                noise.stop(now + 0.1);
+                // [追加] 再生が終わったノードはメモリ解放のために接続を切断する
+                noise.onended = () => {
+                    noise.disconnect();
+                    filter.disconnect();
+                    env.disconnect();
+                };
+            }
+            
+            resizeCanvas() {
+                this.renderer.resizeCanvas(document.getElementById('emotion-map-container'));
+                this.marker.x = this.canvas.width / 2;
+                this.marker.y = this.canvas.height / 2;
+                this.valence = 0.0;
+                this.arousal = 0.0;
+                this.renderer.drawCanvas(this.valence, this.arousal, this.marker, this.canvas.width, this.canvas.height);
+                if (this.isPlaying) this.updateSoundParameters();
+            }
+        }
+
+        window.addEventListener('DOMContentLoaded', () => {
+            const manager = new SoundscapeManager('myCanvas');
+            // 初期化はユーザー操作またはボタンクリック時に行うように変更したため、ここでは行わない
+            // manager.init(); // これは削除
+            window.addEventListener('resize', () => manager.resizeCanvas());
+        });
+    </script>
+</body>
+</html>
