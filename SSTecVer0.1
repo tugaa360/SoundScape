@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>感情のサウンドスケープ - Techno Edition</title>
+    <style>
+        :root {
+            --bg-color: #121212;
+            --text-color: #e0e0e0;
+            --primary-color: #ff00ff; /* Magenta for a techno vibe */
+            --card-bg: #1e1e1e;
+            --border-color: #333;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        .container {
+            max-width: 800px;
+            width: 100%;
+        }
+        #emotion-map-container {
+            position: relative;
+            width: 100%;
+            padding-top: 50%;
+            margin-top: 1rem;
+            border-radius: 12px;
+            overflow: hidden;
+            border: 1px solid var(--border-color);
+        }
+        #myCanvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            cursor: crosshair;
+            background: #000;
+        }
+        .axis-label {
+            position: absolute; font-size: 0.8rem; color: #bbb;
+            background-color: rgba(20, 20, 20, 0.8); padding: 2px 8px;
+            border-radius: 4px; user-select: none;
+        }
+        .label-arousal-pos { top: 10px; left: 50%; transform: translateX(-50%); }
+        .label-arousal-neg { bottom: 10px; left: 50%; transform: translateX(-50%); }
+        .label-valence-pos { top: 50%; right: 10px; transform: translateY(-50%); }
+        .label-valence-neg { top: 50%; left: 10px; transform: translateY(-50%); }
+        
+        #controls {
+            margin-top: 20px; padding: 20px; border: 1px solid var(--border-color);
+            border-radius: 8px; background-color: var(--card-bg);
+            width: 100%; box-sizing: border-box;
+        }
+        #sound-toggle-button {
+            width: 100%; padding: 10px 15px; font-size: 1em; cursor: pointer;
+            border-radius: 5px; border: 1px solid var(--primary-color);
+            background-color: var(--card-bg); color: var(--primary-color);
+            transition: background-color 0.2s, color 0.2s; margin-bottom: 20px;
+        }
+        #sound-toggle-button:hover { background-color: var(--primary-color); color: #fff; }
+        #jog-dials-container { display: flex; justify-content: space-around; flex-wrap: wrap; gap: 20px; }
+        .jog-dial-wrapper { display: flex; flex-direction: column; align-items: center; }
+        .jog-dial-canvas { cursor: ns-resize; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div id="emotion-map-container">
+            <canvas id="myCanvas" tabindex="0" aria-label="感情マップキャンバス"></canvas>
+            <div class="axis-label label-arousal-pos">Energy (+)</div>
+            <div class="axis-label label-arousal-neg">Energy (-)</div>
+            <div class="axis-label label-valence-pos">Mood (+)</div>
+            <div class="axis-label label-valence-neg">Mood (-)</div>
+        </div>
+        <div id="controls">
+            <button id="sound-toggle-button">マップをクリックしてサウンドを開始</button>
+            <div id="jog-dials-container"></div>
+        </div>
+    </div>
+
+    <script>
+        class CanvasRenderer {
+            constructor(canvas) {
+                this.canvas = canvas;
+                this.ctx = canvas.getContext('2d');
+                this.dpr = window.devicePixelRatio || 1;
+            }
+
+            resizeCanvas(container) {
+                this.dpr = window.devicePixelRatio || 1;
+                this.canvas.width = container.clientWidth * this.dpr;
+                this.canvas.height = container.clientHeight * this.dpr;
+                this.canvas.style.width = `${container.clientWidth}px`;
+                this.canvas.style.height = `${container.clientHeight}px`;
+                this.ctx.scale(this.dpr, this.dpr);
+            }
+
+            drawCanvas(valence, arousal, marker) {
+                const width = this.canvas.width / this.dpr;
+                const height = this.canvas.height / this.dpr;
+
+                this.ctx.clearRect(0, 0, width, height);
+                this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+                this.ctx.lineWidth = 1;
+                this.ctx.beginPath();
+                this.ctx.moveTo(width / 2, 0);
+                this.ctx.lineTo(width / 2, height);
+                this.ctx.moveTo(0, height / 2);
+                this.ctx.lineTo(width, height / 2);
+                this.ctx.stroke();
+
+                this.ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+                this.ctx.strokeStyle = 'rgba(255, 0, 255, 1)'; // Use primary color
+                this.ctx.lineWidth = 3;
+                this.ctx.beginPath();
+                const r = 10 + arousal * 5;
+                this.ctx.arc(marker.x, marker.y, Math.max(5, r), 0, Math.PI * 2);
+                this.ctx.fill();
+                this.ctx.stroke();
+            }
+        }
+
+        class JogDial {
+            constructor(containerId, label, min, max, initialValue, formatFn) {
+                this.min = min;
+                this.max = max;
+                this.value = initialValue;
+                this.label = label;
+                this.formatFn = formatFn || (val => val.toFixed(2));
+                const wrapper = document.createElement('div');
+                wrapper.className = 'jog-dial-wrapper';
+                this.canvas = document.createElement('canvas');
+                this.canvas.width = 100;
+                this.canvas.height = 100;
+                this.canvas.className = 'jog-dial-canvas';
+                this.ctx = this.canvas.getContext('2d');
+                wrapper.appendChild(this.canvas);
+                document.getElementById(containerId).appendChild(wrapper);
+                this.isDragging = false;
+                this.lastY = 0;
+                this.angle = this.valueToAngle(this.value);
+                this.setupEventListeners();
+                this.draw();
+            }
+
+            setupEventListeners() {
+                const handleStart = (e) => { this.isDragging = true; this.lastY = e.clientY || e.touches[0].clientY; this.canvas.style.cursor = 'grabbing'; };
+                const handleMove = (e) => { if (!this.isDragging) return; const clientY = e.clientY || e.touches[0].clientY; const deltaY = this.lastY - clientY; this.updateValue(e, deltaY); this.lastY = clientY; };
+                const handleEnd = () => { this.isDragging = false; this.canvas.style.cursor = 'ns-resize'; };
+                this.canvas.addEventListener('mousedown', handleStart);
+                document.addEventListener('mousemove', handleMove);
+                document.addEventListener('mouseup', handleEnd);
+                this.canvas.addEventListener('touchstart', (e) => { e.preventDefault(); handleStart(e); }, { passive: false });
+                document.addEventListener('touchmove', (e) => { if (this.isDragging) e.preventDefault(); handleMove(e); }, { passive: false });
+                document.addEventListener('touchend', handleEnd);
+            }
+            
+            updateValue(event, delta) {
+                const range = this.max - this.min;
+                const sensitivity = event.shiftKey ? 0.1 : 1.0;
+                const newValue = this.value + (delta / 200) * range * sensitivity;
+                this.value = Math.max(this.min, Math.min(this.max, newValue));
+                this.angle = this.valueToAngle(this.value);
+                this.draw();
+                this.canvas.dispatchEvent(new CustomEvent('change', { detail: { value: this.value } }));
+            }
+            
+            valueToAngle(value) {
+                const ratio = (value - this.min) / (this.max - this.min);
+                return (ratio * 270 - 135) * (Math.PI / 180);
+            }
+
+            draw() {
+                const ctx = this.ctx, w = this.canvas.width, h = this.canvas.height, cx = w/2, cy = h/2, radius = w/2 - 10;
+                ctx.clearRect(0, 0, w, h);
+                ctx.strokeStyle = '#444'; ctx.lineWidth = 4; ctx.beginPath(); ctx.arc(cx, cy, radius, -135*(Math.PI/180), 135*(Math.PI/180)); ctx.stroke();
+                ctx.strokeStyle = '#ff00ff'; ctx.lineWidth = 6; ctx.beginPath(); ctx.arc(cx, cy, radius, -135*(Math.PI/180), this.angle); ctx.stroke();
+                ctx.fillStyle = '#e0e0e0'; ctx.textAlign = 'center'; ctx.font = '14px sans-serif'; ctx.fillText(this.label, cx, cy - 5);
+                ctx.font = 'bold 16px sans-serif'; ctx.fillText(this.formatFn(this.value), cx, cy + 15);
+            }
+        }
+        
+        class AudioEngine {
+            constructor(audioContext) {
+                this.audioContext = audioContext;
+                this.nodes = {};
+                this.buildAudioGraph();
+            }
+
+            createOscillator(type) { const osc = this.audioContext.createOscillator(); osc.type = type; return osc; }
+            createOneShotNoiseSource() { const bufferSize = this.audioContext.sampleRate * 0.2; const buffer = this.audioContext.createBuffer(1, bufferSize, this.audioContext.sampleRate); const data = buffer.getChannelData(0); for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1; const source = this.audioContext.createBufferSource(); source.buffer = buffer; return source; }
+            makeDistortionCurve(amount) { const k = amount, n = 44100, curve = new Float32Array(n), deg = Math.PI/180; for (let i = 0; i < n; i++) { const x = i*2/n - 1; curve[i] = (3+k)*x*20*deg/(Math.PI+k*Math.abs(x)); } return curve; }
+
+            createAlgorithmicReverb(targetNode) {
+                const ac = this.audioContext;
+                const wetGain = ac.createGain(); wetGain.gain.value = 0;
+                const input = ac.createGain();
+                const reverbBus = ac.createGain();
+                input.connect(wetGain);
+                wetGain.connect(reverbBus);
+                reverbBus.connect(targetNode);
+                const delays = [0.031, 0.037, 0.043, 0.053];
+                delays.forEach(delayTime => {
+                    const delay = ac.createDelay(1.0); delay.delayTime.value = delayTime + Math.random() * 0.01;
+                    const feedback = ac.createGain(); feedback.gain.value = 0.6;
+                    const filter = ac.createBiquadFilter(); filter.type = 'lowpass'; filter.frequency.value = 2500;
+                    input.connect(delay); delay.connect(filter); filter.connect(feedback); feedback.connect(delay); delay.connect(reverbBus);
+                });
+                return { input, wetGain };
+            }
+            
+            buildAudioGraph() {
+                const ac = this.audioContext;
+                this.nodes.masterGain = ac.createGain(); this.nodes.masterGain.gain.value = 0;
+                this.nodes.masterGain.connect(ac.destination);
+                const mainBus = ac.createGain();
+                this.nodes.delay = ac.createDelay(2.0); this.nodes.delayFeedback = ac.createGain();
+                this.nodes.delayWet = ac.createGain(); this.nodes.delayDry = ac.createGain();
+                this.nodes.delay.connect(this.nodes.delayFeedback); this.nodes.delayFeedback.connect(this.nodes.delay);
+                const reverb = this.createAlgorithmicReverb(this.nodes.masterGain);
+                this.nodes.reverbInput = reverb.input; this.nodes.reverbWet = reverb.wetGain;
+                mainBus.connect(this.nodes.delayDry); mainBus.connect(this.nodes.delay);
+                this.nodes.delay.connect(this.nodes.delayWet);
+                this.nodes.delayDry.connect(this.nodes.reverbInput); this.nodes.delayWet.connect(this.nodes.reverbInput);
+            }
+        }
+        
+        class SoundscapeManager {
+            constructor(canvasId) {
+                this.canvas = document.getElementById(canvasId);
+                this.renderer = new CanvasRenderer(this.canvas);
+                this.audioEngine = null; this.audioContext = null;
+                this.isInitialized = false; this.isPlaying = false; this.isDragging = false;
+                this.timers = {};
+                this.params = { tempo: 120, reverb: 0.5, delayFeedback: 0.4 };
+                this.valence = 0.0; this.arousal = 0.0;
+                this.marker = { x: 0, y: 0 };
+                this.resizeCanvas();
+                this.createDials();
+                this.setupEventListeners();
+            }
+
+            createDials() {
+                this.dials = {
+                    tempo: new JogDial('jog-dials-container', 'テンポ', 80, 160, this.params.tempo, v => `${v.toFixed(0)} BPM`),
+                    reverb: new JogDial('jog-dials-container', '空間', 0, 1, this.params.reverb, v => `${(v * 100).toFixed(0)}%`),
+                    delayFeedback: new JogDial('jog-dials-container', '反響', 0, 0.9, this.params.delayFeedback, v => `${(v * 100).toFixed(0)}%`),
+                };
+            }
+
+            async init() {
+                if (this.isInitialized) return;
+                try {
+                    this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                    await this.audioContext.resume();
+                    this.audioEngine = new AudioEngine(this.audioContext);
+                    this.isInitialized = true;
+                    console.log("Techno Soundscape Manager Initialized.");
+                } catch (e) { console.error("Failed to initialize audio context:", e); }
+            }
+
+            setupEventListeners() {
+                document.getElementById('sound-toggle-button').addEventListener('click', async () => { if (!this.isInitialized) await this.init(); this.toggleSound(); });
+                for (const [key, dial] of Object.entries(this.dials)) { dial.canvas.addEventListener('change', (e) => { this.params[key] = e.detail.value; if (this.isPlaying) this.updateSoundParameters(); }); }
+                const handleMove = (e) => { if (this.isDragging) this.updatePosition(e); };
+                const handleDown = async (e) => { if (!this.isInitialized) await this.init(); if (this.audioContext.state === 'suspended') await this.audioContext.resume(); this.isDragging = true; this.updatePosition(e); };
+                const handleUp = () => { this.isDragging = false; };
+                this.canvas.addEventListener('mousedown', handleDown); document.addEventListener('mousemove', handleMove); document.addEventListener('mouseup', handleUp);
+                this.canvas.addEventListener('touchstart', handleDown, { passive: false }); this.canvas.addEventListener('touchmove', handleMove, { passive: false }); document.addEventListener('touchend', handleUp);
+            }
+            
+            updatePosition(e) {
+                e.preventDefault();
+                const rect = this.canvas.getBoundingClientRect();
+                let clientX = e.clientX;
+                let clientY = e.clientY;
+                if (e.touches && e.touches.length > 0) {
+                    clientX = e.touches[0].clientX;
+                    clientY = e.touches[0].clientY;
+                }
+                if (clientX === undefined || clientY === undefined) { return; }
+                const rawX = clientX - rect.left;
+                const rawY = clientY - rect.top;
+                this.marker.x = Math.max(0, Math.min(rect.width, rawX));
+                this.marker.y = Math.max(0, Math.min(rect.height, rawY));
+                this.valence = (this.marker.x / rect.width) * 2 - 1;
+                this.arousal = -((this.marker.y / rect.height) * 2 - 1);
+                this.renderer.drawCanvas(this.valence, this.arousal, this.marker);
+                if (this.isPlaying) this.updateSoundParameters();
+            }
+
+            toggleSound() {
+                if (!this.audioEngine) return;
+                const button = document.getElementById('sound-toggle-button');
+                const now = this.audioContext.currentTime;
+                if (this.isPlaying) {
+                    this.audioEngine.nodes.masterGain.gain.cancelScheduledValues(now); this.audioEngine.nodes.masterGain.gain.linearRampToValueAtTime(0, now + 0.5);
+                    button.textContent = "サウンド再生"; clearInterval(this.timers.sequencer);
+                } else {
+                    this.updateSoundParameters();
+                    this.audioEngine.nodes.masterGain.gain.cancelScheduledValues(now); this.audioEngine.nodes.masterGain.gain.linearRampToValueAtTime(0.7, now + 0.5);
+                    button.textContent = "サウンド停止"; this.startSequencer();
+                }
+                this.isPlaying = !this.isPlaying;
+            }
+
+            startSequencer() {
+                this.noteTime = this.audioContext.currentTime; this.currentStep = 0;
+                const loop = () => {
+                    const now = this.audioContext.currentTime, tempo = this.dials.tempo.value, secondsPerSixteenth = 60.0 / tempo / 4;
+                    while (this.noteTime < now + 0.1) {
+                        if (this.currentStep % 4 === 0) this.triggerKick(this.noteTime);
+                        if (this.currentStep % 2 === 0) this.triggerHihat(this.noteTime, this.currentStep);
+                        this.triggerBass(this.noteTime, this.currentStep);
+                        this.triggerSynth(this.noteTime, this.currentStep);
+                        this.noteTime += secondsPerSixteenth; this.currentStep = (this.currentStep + 1) % 16;
+                    }
+                };
+                this.timers.sequencer = setInterval(loop, 25);
+            }
+
+            updateSoundParameters() {
+                if (!this.isInitialized || !this.isPlaying) return;
+                const now = this.audioContext.currentTime, t = 0.1;
+                this.audioEngine.nodes.delayFeedback.gain.setTargetAtTime(this.dials.delayFeedback.value, now, t);
+                this.audioEngine.nodes.reverbWet.gain.setTargetAtTime(this.dials.reverb.value, now, t);
+            }
+            
+            triggerKick(time) {
+                const ac = this.audioContext, { masterGain } = this.audioEngine.nodes;
+                const osc = this.audioEngine.createOscillator('sine'), env = ac.createGain(), waveShaper = ac.createWaveShaper();
+                waveShaper.curve = this.audioEngine.makeDistortionCurve(25 + this.arousal * 40);
+                const pitch = 60 - (1 - (this.valence+1)/2) * 20;
+                osc.frequency.setValueAtTime(pitch, time); osc.frequency.exponentialRampToValueAtTime(30, time + 0.15);
+                env.gain.setValueAtTime(0, time); env.gain.linearRampToValueAtTime(2.5 + this.arousal * 0.5, time + 0.01);
+                env.gain.exponentialRampToValueAtTime(0.001, time + 0.2);
+                osc.connect(waveShaper); waveShaper.connect(env); env.connect(masterGain);
+                osc.start(time); osc.stop(time + 0.2);
+            }
+
+            triggerHihat(time, step) {
+                const ac = this.audioContext, { reverbInput } = this.audioEngine.nodes;
+                // [FIX] Corrected the function call
+                const noise = this.audioEngine.createOneShotNoiseSource();
+                const filter = ac.createBiquadFilter(), env = ac.createGain();
+                filter.type = 'highpass';
+                const openDecay = 0.05 + Math.abs(this.valence) * 0.2, decay = (step % 4 === 2) ? openDecay : 0.05, cutoff = 5000 + this.arousal * 3000;
+                filter.frequency.setValueAtTime(cutoff, time); filter.Q.value = 10;
+                env.gain.setValueAtTime(0, time); env.gain.linearRampToValueAtTime(1.0, time + 0.01);
+                env.gain.exponentialRampToValueAtTime(0.001, time + decay);
+                noise.connect(filter); filter.connect(env); env.connect(reverbInput);
+                noise.start(time);
+            }
+
+            triggerBass(time, step) {
+                const ac = this.audioContext, { reverbInput } = this.audioEngine.nodes;
+                const aNorm = (this.arousal + 1) / 2;
+                const pattern = [0, 0, 7, 0, 5, 0, 3, 0];
+                const noteIndex = pattern[step % 8];
+                if (Math.random() > 0.8 && step % 2 !== 0) return;
+                const osc = this.audioEngine.createOscillator('sawtooth'), filter = ac.createBiquadFilter(), env = ac.createGain();
+                const freq = 440 * Math.pow(2, (36 + noteIndex - 69) / 12);
+                osc.frequency.setValueAtTime(freq, time);
+                filter.type = 'lowpass'; filter.frequency.setValueAtTime(100 + aNorm * 1000, time); filter.Q.value = 5 + (this.valence+1)/2 * 10;
+                env.gain.setValueAtTime(0, time); env.gain.linearRampToValueAtTime(0.5, time + 0.01); env.gain.exponentialRampToValueAtTime(0.001, time + 0.15);
+                osc.connect(filter); filter.connect(env); env.connect(reverbInput);
+                osc.start(time); osc.stop(time + 0.15);
+            }
+
+            triggerSynth(time, step) {
+                if (step % 4 !== 1 && step % 8 !== 3 && step % 16 !== 7) return;
+                const ac = this.audioContext, { reverbInput } = this.audioEngine.nodes, vNorm = (this.valence+1)/2, aNorm = (this.arousal+1)/2;
+                const scale = vNorm > 0.5 ? [0, 2, 4, 7, 9] : [0, 3, 5, 7, 10];
+                const note = scale[Math.floor(Math.random() * scale.length)];
+                const freq = 440 * Math.pow(2, (60 + note - 69) / 12);
+                const osc = this.audioEngine.createOscillator(aNorm > 0.5 ? 'sawtooth' : 'triangle'), filter = ac.createBiquadFilter(), env = ac.createGain();
+                osc.frequency.value = freq;
+                filter.type = 'lowpass'; filter.frequency.setValueAtTime(800 + aNorm * 4000, time); filter.Q.value = 1 + aNorm * 15;
+                const release = 0.2 + (1-aNorm) * 0.3;
+                env.gain.setValueAtTime(0, time); env.gain.linearRampToValueAtTime(0.4, time + 0.01);
+                env.gain.linearRampToValueAtTime(0.3 + vNorm*0.3, time + 0.11);
+                env.gain.linearRampToValueAtTime(0, time + 0.11 + release);
+                osc.connect(filter); filter.connect(env); env.connect(reverbInput);
+                osc.start(time); osc.stop(time + 0.11 + release);
+            }
+
+            resizeCanvas() {
+                this.renderer.resizeCanvas(document.getElementById('emotion-map-container'));
+                // [FIX] Access clientWidth/clientHeight from canvas, not this.canvas
+                const canvasEl = this.renderer.canvas;
+                this.marker.x = canvasEl.clientWidth / 2;
+                this.marker.y = canvasEl.clientHeight / 2;
+                this.valence = 0.0; this.arousal = 0.0;
+                this.renderer.drawCanvas(this.valence, this.arousal, this.marker);
+                if (this.isPlaying) this.updateSoundParameters();
+            }
+        }
+
+        window.addEventListener('DOMContentLoaded', () => {
+            const manager = new SoundscapeManager('myCanvas');
+            window.addEventListener('resize', () => manager.resizeCanvas());
+        });
+    </script>
+</body>
+</html>
